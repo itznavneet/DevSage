@@ -1,7 +1,7 @@
-
 import type { Request, Response } from "express";
 import { z } from "zod";
 import { prisma } from "../db";
+import { ingestionQueue } from "../queues/ingestion.queue";
 
 const createRepositorySchema = z.object({
   url: z.string().trim().url(),
@@ -27,7 +27,10 @@ function parseGitHubUrl(value: string) {
 
     if (parts.length !== 2) return null;
 
-    const [owner, repo] = parts;
+    const owner = parts[0];
+    const repo = parts[1];
+
+    if (!owner || !repo) return null;
 
     if (
       !/^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$/.test(owner) ||
@@ -55,14 +58,17 @@ export async function createRepository(req: Request, res: Response) {
   const parsed = createRepositorySchema.safeParse(req.body);
 
   if (!parsed.success) {
-    return res.status(400).json({ message: "Please provide a valid GitHub URL" });
+    return res
+      .status(400)
+      .json({ message: "Please provide a valid GitHub URL" });
   }
 
   const github = parseGitHubUrl(parsed.data.url);
 
   if (!github) {
     return res.status(400).json({
-      message: "URL must point to a public GitHub repository, e.g. https://github.com/owner/repo",
+      message:
+        "URL must point to a public GitHub repository, e.g. https://github.com/owner/repo",
     });
   }
 
@@ -78,6 +84,25 @@ export async function createRepository(req: Request, res: Response) {
         userId,
       },
     });
+
+    await ingestionQueue.add(
+      "ingest-repository",
+      {
+        repositoryId: repository.id,
+        userId,
+        url: repository.url,
+      },
+      {
+        jobId: repository.id,
+        attempts: 3,
+        backoff: {
+          type: "exponential",
+          delay: 2000,
+        },
+        removeOnComplete: 100,
+        removeOnFail: 500,
+      },
+    );
 
     return res.status(201).json({ repository });
   } catch (error) {
@@ -101,7 +126,7 @@ export async function createRepository(req: Request, res: Response) {
 export async function listRepositories(_req: Request, res: Response) {
   try {
     const repositories = await prisma.repository.findMany({
-      where: { userId: res.locals.user.id },
+      where: { userId: res.locals.user.id as string },
       orderBy: { createdAt: "desc" },
     });
 
