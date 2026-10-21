@@ -7,14 +7,23 @@ datasource db {
   provider = "postgresql"
 }
 
+enum RepositoryStatus {
+  PENDING
+  CLONING
+  INDEXING
+  READY
+  FAILED
+}
+
 model User {
-  id           String    @id @default(uuid())
+  id           String       @id @default(uuid())
   name         String?
-  email        String    @unique
+  email        String       @unique
   passwordHash String
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
   sessions     Session[]
+  repositories Repository[]
 }
 
 model Session {
@@ -28,4 +37,25 @@ model Session {
 
   @@index([userId])
   @@index([expiresAt])
+}
+
+model Repository {
+  id            String           @id @default(uuid())
+  name          String
+  url           String
+  githubOwner   String
+  githubName    String
+  defaultBranch String           @default("main")
+  status        RepositoryStatus @default(PENDING)
+  errorMessage  String?
+  lastIndexedAt DateTime?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, url])
+  @@index([userId, createdAt])
+  @@index([status])
 }

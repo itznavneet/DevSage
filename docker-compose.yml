@@ -1,47 +1,4 @@
-
 services:
-  web:
-    build:
-      context: ./apps/web
-      dockerfile: Dockerfile
-    ports:
-      - "3000:3000"
-    volumes:
-      - ./apps/web:/app
-      - /app/node_modules
-      - /app/.next
-    environment:
-      NEXT_TELEMETRY_DISABLED: "1"
-      WATCHPACK_POLLING: "true"
-      CHOKIDAR_USEPOLLING: "true"
-    command: npm run dev -- --hostname 0.0.0.0
-    depends_on:
-      - api
-
-  api:
-    build: ./services/api
-    ports:
-      - "4000:4000"
-    volumes:
-      - ./services/api:/app
-      - /app/node_modules
-    environment:
-      PORT: "4000"
-      FRONTEND_URL: "http://localhost:3000"
-      DATABASE_URL: "postgresql://devsage:devsage_local_change_me@postgres:5432/devsage?schema=public"
-      CHOKIDAR_USEPOLLING: "true"
-    command: npm run dev
-
-  ai:
-    build: ./services/ai
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./services/ai:/app
-    environment:
-      WATCHFILES_FORCE_POLLING: "true"
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
-
   postgres:
     image: postgres:16-alpine
     environment:
@@ -57,11 +14,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
 
   qdrant:
     image: qdrant/qdrant:latest

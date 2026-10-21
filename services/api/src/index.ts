@@ -3,6 +3,7 @@ import cors from "cors";
 import {prisma} from "./db";
 import cookieParser from "cookie-parser";
 import authRoutes from "./routes/auth.routes";
+import repositoryRoutes from "./routes/repository.routes";
 
 const app = express();
 const PORT = Number(process.env.PORT) || 4000;
@@ -14,6 +15,7 @@ app.use(cors({
 app.use(express.json());
 app.use(cookieParser());
 app.use("/api/auth", authRoutes);
+app.use("/api/repositories", repositoryRoutes);
 
 app.get("/health", (_req, res) => {
   res.json({
