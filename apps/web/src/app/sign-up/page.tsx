@@ -7,6 +7,8 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import axios from "axios";
+import { registerUser } from "@/lib/auth.api";
 
 export default function SignUpPage() {
   const router = useRouter();
@@ -16,37 +18,27 @@ export default function SignUpPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    setError("");
-    setLoading(true);
+ async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+  e.preventDefault();
+  setError("");
+  setLoading(true);
 
-    try {
-      const response = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/auth/register`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({ name, email, password }),
-        }
+  try {
+    await registerUser({ name, email, password });
+    router.push("/dashboard");
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      setError(
+        error.response?.data?.message ||
+          "Unable to create account. Please try again."
       );
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        setError(data.message || "Unable to create account.");
-        return;
-      }
-
-      router.push("/dashboard");
-    } catch {
-      setError("Cannot connect to the server. Please try again.");
-    } finally {
-      setLoading(false);
+    } else {
+      setError("Something went wrong. Please try again.");
     }
+  } finally {
+    setLoading(false);
   }
-
+}
   return (
     <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#0c0a10] px-5 py-12 text-white">
       <div className="pointer-events-none absolute -left-32 -top-32 h-80 w-80 rounded-full bg-violet-600/10 blur-[100px]" />
@@ -137,5 +129,3 @@ export default function SignUpPage() {
     </main>
   );
 }
-
-export default SignUp;

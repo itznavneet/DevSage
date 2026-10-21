@@ -40,7 +40,7 @@ app.get("/health/db", async (_req, res) => {
   }
 });
 
-
+console.log("Starting DevSage API...");
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`DevSage API running on port ${PORT}`);
 });
