@@ -4,6 +4,7 @@ import {prisma} from "./db";
 import cookieParser from "cookie-parser";
 import authRoutes from "./routes/auth.routes";
 import repositoryRoutes from "./routes/repository.routes";
+import aiRoutes from "./routes/ai.routes";
 
 const app = express();
 const PORT = Number(process.env.PORT) || 4000;
@@ -16,6 +17,7 @@ app.use(express.json());
 app.use(cookieParser());
 app.use("/api/auth", authRoutes);
 app.use("/api/repositories", repositoryRoutes);
+app.use("/api/ai", aiRoutes);
 
 app.get("/health", (_req, res) => {
   res.json({
