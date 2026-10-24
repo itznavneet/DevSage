@@ -17,4 +17,5 @@ export interface IngestionJobData {
   repositoryId: string;
   userId: string;
   url: string;
+  indexVersion: string;
 }

@@ -1,7 +1,7 @@
 
 import { Worker } from "bullmq";
 import IORedis from "ioredis";
-import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { prisma } from "../db";
 import type { IngestionJobData } from "../queues/ingestion.queue";
 import { execFile } from "node:child_process";
@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import { mkdtemp, readdir, stat, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, extname, basename } from "node:path";
+import { stageAndActivate } from "./versioned-ingestion";
 
 const execFileAsync = promisify(execFile);
 
@@ -20,19 +21,28 @@ const connection = new IORedis(
 const AI_SERVICE_URL =
   process.env.AI_SERVICE_URL || "http://localhost:8000";
 
+// GitHub repositories can contain very deeply nested fixture paths. Git's
+// long-path option is enabled below so checkout does not fail on Windows.
+const INGESTION_TEMP_ROOT = process.env.DEVSAGE_TEMP_DIR || tmpdir();
+
 const IGNORED_DIRS = new Set([
-  ".git",
-  "node_modules",
-  "dist",
-  "build",
-  ".next",
-  "coverage",
-  "vendor",
-  "__pycache__",
-  ".venv",
-  "venv",
-  "target",
-  "out",
+ ".git",
+ "node_modules",
+ "dist",
+ "build",
+ ".next",
+ "coverage",
+ ".venv",
+"venv",
+"env",
+"__pycache__",
+".idea",
+".vscode",
+"vendor",
+"target",
+"out",
+"tmp",
+"temp",
 ]);
 
 const SOURCE_EXTENSIONS = new Set([
@@ -48,13 +58,30 @@ const SOURCE_EXTENSIONS = new Set([
 const IGNORED_FILES = new Set([
   ".env",
   ".env.local",
+  ".env.development",
   ".env.production",
+  ".env.test",
+  ".env.staging",
+  ".npmrc",
+  ".pypirc",
+  ".netrc",
   "id_rsa",
   "id_ed25519",
+  "credentials",
+  "credentials.json",
+  "secrets.json",
+  "service-account.json",
+  "private.key",
 ]);
 
 const SECRET_EXTENSIONS = new Set([
-  ".pem", ".key", ".p12", ".pfx", ".keystore",
+    ".pem",
+  ".key",
+  ".p12",
+  ".pfx",
+  ".keystore",
+  ".jks",
+  ".crt",
 ]);
 
 const MAX_FILES = 5000;
@@ -72,6 +99,7 @@ interface SourceFile {
 interface CodeChunk {
   id: string;
   repository_id: string;
+  index_version: string;
   file_path: string;
   start_line: number;
   end_line: number;
@@ -106,10 +134,13 @@ async function collectSourceFiles(root: string): Promise<SourceFile[]> {
       // Avoid indexing credentials and likely secret files.
       if (
         IGNORED_FILES.has(fileName) ||
-        fileName.startsWith(".env.") ||
-        SECRET_EXTENSIONS.has(extension) ||
-        fileName.endsWith(".secret") ||
-        fileName.endsWith(".pem")
+  fileName.startsWith(".env.") ||
+  fileName.endsWith(".secret") ||
+  fileName.endsWith(".secrets") ||
+  fileName.endsWith(".pem") ||
+  fileName.endsWith(".key") ||
+  fileName.endsWith(".token") ||
+  SECRET_EXTENSIONS.has(extension)
       ) {
         continue;
       }
@@ -137,8 +168,19 @@ async function collectSourceFiles(root: string): Promise<SourceFile[]> {
   return files;
 }
 
+function stablePointId(indexVersion: string, chunkId: string): string {
+  const bytes = createHash("sha1")
+    .update(`${indexVersion}:${chunkId}`)
+    .digest();
+  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x50;
+  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
 function splitIntoChunks(
   repositoryId: string,
+  indexVersion: string,
   filePath: string,
   source: string
 ): CodeChunk[] {
@@ -159,6 +201,7 @@ function splitIntoChunks(
 
       while (end < lines.length) {
         const nextLine = lines[end];
+        if (nextLine === undefined) break;
         const separator = content.length > 0 ? "\n" : "";
 
         if (
@@ -183,8 +226,9 @@ function splitIntoChunks(
 
     if (content.trim()) {
       chunks.push({
-        id: randomUUID(),
+        id: stablePointId(indexVersion, `${filePath}:${start + 1}:${end}`),
         repository_id: repositoryId,
+        index_version: indexVersion,
         file_path: filePath,
         start_line: start + 1,
         end_line: end,
@@ -201,15 +245,15 @@ function splitIntoChunks(
   return chunks;
 }
 
-async function deleteExistingVectors(repositoryId: string): Promise<void> {
+async function deleteIndexVersion(repositoryId: string, indexVersion: string): Promise<void> {
   const response = await fetch(
-    `${AI_SERVICE_URL}/repositories/${encodeURIComponent(repositoryId)}`,
+    `${AI_SERVICE_URL}/repositories/${encodeURIComponent(repositoryId)}/indexes/${encodeURIComponent(indexVersion)}`,
     { method: "DELETE", signal: AbortSignal.timeout(30_000) }
   );
 
   if (!response.ok) {
     throw new Error(
-      `Could not clear existing vectors (${response.status}): ` +
+      `Could not clear index version (${response.status}): ` +
       (await response.text()).slice(0, 500)
     );
   }
@@ -248,7 +292,14 @@ const worker = new Worker<IngestionJobData>(
   "repository-ingestion",
   async (job) => {
     const { repositoryId, userId, url } = job.data;
+    // Older queued jobs may not have a version. Give them a deterministic,
+    // isolated staging version instead of falling back to the active vectors.
+    const indexVersion = job.data.indexVersion || createHash("sha256")
+      .update(`${job.id ?? "job"}:${repositoryId}`)
+      .digest("hex")
+      .slice(0, 32);
     let temporaryDirectory: string | undefined;
+    let previousActiveIndexVersion: string | null = null;
 
     try {
       const repository = await prisma.repository.findFirst({
@@ -274,18 +325,24 @@ const worker = new Worker<IngestionJobData>(
       }
 
       const parts = parsedUrl.pathname.split("/").filter(Boolean);
+      const owner = parts[0];
+      const repo = parts[1];
 
       if (
         parts.length !== 2 ||
-        !/^[a-zA-Z0-9-]+$/.test(parts[0]) ||
-        !/^[a-zA-Z0-9._-]+$/.test(parts[1])
+        !owner ||
+        !repo ||
+        !/^[a-zA-Z0-9-]+$/.test(owner) ||
+        !/^[a-zA-Z0-9._-]+$/.test(repo)
       ) {
         throw new Error("Invalid GitHub repository URL");
       }
 
       const safeUrl =
-        `https://github.com/${parts[0]}/` +
-        `${parts[1].replace(/\.git$/i, "")}.git`;
+        `https://github.com/${owner}/` +
+        `${repo.replace(/\.git$/i, "")}.git`;
+
+      previousActiveIndexVersion = repository.activeIndexVersion;
 
       await prisma.repository.update({
         where: { id: repositoryId },
@@ -293,7 +350,7 @@ const worker = new Worker<IngestionJobData>(
       });
 
       temporaryDirectory = await mkdtemp(
-        join(tmpdir(), "devsage-repo-")
+        join(INGESTION_TEMP_ROOT, "repo-")
       );
 
       const cloneDirectory = join(temporaryDirectory, "source");
@@ -301,6 +358,7 @@ const worker = new Worker<IngestionJobData>(
       await execFileAsync(
         "git",
         [
+          "-c", "core.longpaths=true",
           "clone",
           "--depth", "1",
           "--single-branch",
@@ -327,38 +385,52 @@ const worker = new Worker<IngestionJobData>(
         throw new Error("No supported source files found");
       }
 
-      // Clear old vectors only after cloning and validating the source files.
-      await deleteExistingVectors(repositoryId);
+      // A retry may have left partial points for this staged version. Removing
+      // only this version is safe and never touches the active index.
+      await deleteIndexVersion(repositoryId, indexVersion);
 
-      let totalChunks = 0;
+      const totalChunks = await stageAndActivate(
+        async (consumeBatch) => {
+          for (const file of files) {
+            const source = await readFile(file.absolutePath, "utf8");
+            const chunks = splitIntoChunks(
+              repositoryId,
+              indexVersion,
+              file.relativePath,
+              source,
+            );
 
-      for (const file of files) {
-        const source = await readFile(file.absolutePath, "utf8");
+            for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
+              await consumeBatch(chunks.slice(i, i + BATCH_SIZE));
+            }
+          }
+        },
+        sendBatch,
+        async () => {
+          await prisma.repository.update({
+            where: { id: repositoryId },
+            data: {
+              status: "READY",
+              errorMessage: null,
+              lastIndexedAt: new Date(),
+              activeIndexVersion: indexVersion,
+            },
+          });
+        },
+      );
 
-        const chunks = splitIntoChunks(
-          repositoryId,
-          file.relativePath,
-          source
-        );
-
-        for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
-          const batch = chunks.slice(i, i + BATCH_SIZE);
-          totalChunks += await sendBatch(batch);
+      // Activation happened first. If cleanup fails, the new active index is
+      // still valid, so leave the repository READY and report the cleanup.
+      if (previousActiveIndexVersion && previousActiveIndexVersion !== indexVersion) {
+        try {
+          await deleteIndexVersion(repositoryId, previousActiveIndexVersion);
+        } catch (cleanupError) {
+          console.warn(
+            `Could not clean old index ${previousActiveIndexVersion}:`,
+            cleanupError instanceof Error ? cleanupError.message : cleanupError,
+          );
         }
       }
-
-      if (totalChunks === 0) {
-        throw new Error("No non-empty source chunks were produced");
-      }
-
-      await prisma.repository.update({
-        where: { id: repositoryId },
-        data: {
-          status: "READY",
-          errorMessage: null,
-          lastIndexedAt: new Date(),
-        },
-      });
 
       console.log(
         `Repository indexed: ${repository.name}, ` +
@@ -373,10 +445,19 @@ const worker = new Worker<IngestionJobData>(
       await prisma.repository.updateMany({
         where: { id: repositoryId, userId },
         data: {
-          status: "FAILED",
+          status: previousActiveIndexVersion ? "READY" : "FAILED",
           errorMessage: message.slice(0, 1000),
         },
       });
+
+      try {
+        await deleteIndexVersion(repositoryId, indexVersion);
+      } catch (cleanupError) {
+        console.warn(
+          `Could not clean failed index ${indexVersion}:`,
+          cleanupError instanceof Error ? cleanupError.message : cleanupError,
+        );
+      }
 
       console.error(`Ingestion failed for ${repositoryId}:`, message);
       throw error;

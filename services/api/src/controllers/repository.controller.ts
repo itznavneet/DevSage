@@ -2,6 +2,7 @@ import type { Request, Response } from "express";
 import { z } from "zod";
 import { prisma } from "../db";
 import { ingestionQueue } from "../queues/ingestion.queue";
+import { randomUUID } from "node:crypto";
 
 const createRepositorySchema = z.object({
   url: z.string().trim().url(),
@@ -73,6 +74,7 @@ export async function createRepository(req: Request, res: Response) {
   }
 
   const userId = res.locals.user.id as string;
+  let createdRepositoryId: string | undefined;
 
   try {
     const repository = await prisma.repository.create({
@@ -84,6 +86,7 @@ export async function createRepository(req: Request, res: Response) {
         userId,
       },
     });
+    createdRepositoryId = repository.id;
 
     await ingestionQueue.add(
       "ingest-repository",
@@ -91,9 +94,10 @@ export async function createRepository(req: Request, res: Response) {
         repositoryId: repository.id,
         userId,
         url: repository.url,
+        indexVersion: randomUUID(),
       },
       {
-        jobId: repository.id,
+        jobId: `${repository.id}-initial`,
         attempts: 3,
         backoff: {
           type: "exponential",
@@ -119,7 +123,66 @@ export async function createRepository(req: Request, res: Response) {
     }
 
     console.error("Create repository failed:", error);
+
+    if (createdRepositoryId) {
+      await prisma.repository.updateMany({
+        where: { id: createdRepositoryId, userId },
+        data: {
+          status: "FAILED",
+          errorMessage: "Could not enqueue repository indexing. Please retry.",
+        },
+      });
+    }
+
     return res.status(500).json({ message: "Could not add repository" });
+  }
+}
+
+export async function reindexRepository(req: Request, res: Response) {
+  const userId = res.locals.user?.id as string | undefined;
+  const repositoryId = typeof req.params.repositoryId === "string" ? req.params.repositoryId : "";
+
+  if (!userId || !repositoryId) {
+    return res.status(400).json({ message: "Invalid repository" });
+  }
+
+  try {
+    const repository = await prisma.repository.findFirst({
+      where: { id: repositoryId, userId },
+      select: { id: true, url: true, status: true },
+    });
+
+    if (!repository) {
+      return res.status(404).json({ message: "Repository not found" });
+    }
+
+    if (repository.status === "CLONING" || repository.status === "INDEXING") {
+      return res.status(409).json({ message: "Repository indexing is already in progress" });
+    }
+
+    const indexVersion = randomUUID();
+
+    await ingestionQueue.add(
+      "reindex-repository",
+      { repositoryId, userId, url: repository.url, indexVersion },
+      {
+        jobId: `${repository.id}-${indexVersion}`,
+        attempts: 3,
+        backoff: { type: "exponential", delay: 2000 },
+        removeOnComplete: 100,
+        removeOnFail: 500,
+      },
+    );
+
+    await prisma.repository.update({
+      where: { id: repository.id },
+      data: { status: "INDEXING", errorMessage: null },
+    });
+
+    return res.status(202).json({ repositoryId, indexVersion, status: "INDEXING" });
+  } catch (error) {
+    console.error("Reindex repository failed:", error);
+    return res.status(500).json({ message: "Could not start repository re-indexing" });
   }
 }
 

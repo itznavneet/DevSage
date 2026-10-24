@@ -4,8 +4,9 @@
   "main": "index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "worker": "tsx watch src/workers/ingestion.worker.ts",
     "build": "tsc",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "tsx --test --test-force-exit \"tests/**/*.test.ts\""
   },
   "keywords": [],
   "author": "",

@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from openai import OpenAI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from qdrant_client import QdrantClient, models
 
 load_dotenv()
@@ -29,10 +29,12 @@ def ensure_collection():
         current_size = info.config.params.vectors.size
 
         if current_size != VECTOR_SIZE:
-            # Development migration: remove vectors created by the old model.
-            qdrant.delete_collection(COLLECTION)
-        else:
-            return
+            raise RuntimeError(
+                f"Qdrant collection '{COLLECTION}' uses vector size "
+                f"{current_size}, expected {VECTOR_SIZE}. "
+                "Refusing to delete existing data; migrate it explicitly."
+            )
+        return
 
     qdrant.create_collection(
         collection_name=COLLECTION,
@@ -55,26 +57,45 @@ app = FastAPI(title="DevSage AI Service", lifespan=lifespan)
 
 
 class CodeChunk(BaseModel):
-    id: str
-    repository_id: str
-    file_path: str
+    id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+    repository_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+    index_version: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+    file_path: str = Field(min_length=1, max_length=1000)
     start_line: int = Field(ge=1)
     end_line: int = Field(ge=1)
     content: str = Field(min_length=1, max_length=8000)
+
+    @model_validator(mode="after")
+    def validate_line_range(self):
+        if self.end_line < self.start_line:
+            raise ValueError("end_line must be greater than or equal to start_line")
+        if self.file_path.startswith(("/", "\\")) or ".." in self.file_path.replace("\\", "/").split("/"):
+            raise ValueError("file_path must be a relative repository path")
+        return self
 
 
 class IndexRequest(BaseModel):
     chunks: list[CodeChunk] = Field(min_length=1, max_length=128)
 
+    @model_validator(mode="after")
+    def validate_single_version(self):
+        versions = {chunk.index_version for chunk in self.chunks}
+        repositories = {chunk.repository_id for chunk in self.chunks}
+        if len(versions) != 1 or len(repositories) != 1:
+            raise ValueError("A batch must contain one repository and one index version")
+        return self
+
 
 class SearchRequest(BaseModel):
-    repository_id: str
+    repository_id: str = Field(min_length=1, max_length=128)
+    index_version: str = Field(min_length=1, max_length=128)
     question: str = Field(min_length=1, max_length=2000)
     limit: int = Field(default=5, ge=1, le=10)
 
 
 class AskRequest(BaseModel):
-    repository_id: str
+    repository_id: str = Field(min_length=1, max_length=128)
+    index_version: str = Field(min_length=1, max_length=128)
     question: str = Field(min_length=1, max_length=2000)
     limit: int = Field(default=5, ge=1, le=10)
 
@@ -91,8 +112,8 @@ def health():
     }
 
 
-@app.delete("/repositories/{repository_id}")
-def delete_repository_vectors(repository_id: str):
+@app.delete("/repositories/{repository_id}/indexes/{index_version}")
+def delete_index_version(repository_id: str, index_version: str):
     try:
         qdrant.delete(
             collection_name=COLLECTION,
@@ -102,7 +123,11 @@ def delete_repository_vectors(repository_id: str):
                         models.FieldCondition(
                             key="repository_id",
                             match=models.MatchValue(value=repository_id),
-                        )
+                        ),
+                        models.FieldCondition(
+                            key="index_version",
+                            match=models.MatchValue(value=index_version),
+                        ),
                     ]
                 )
             ),
@@ -112,7 +137,8 @@ def delete_repository_vectors(repository_id: str):
         return {
             "success": True,
             "repository_id": repository_id,
-            "message": "Repository vectors deleted",
+            "index_version": index_version,
+            "message": "Index version vectors deleted",
         }
     except Exception as exc:
         raise HTTPException(
@@ -142,6 +168,7 @@ def index_chunks(request: IndexRequest):
                 vector=embedding.embedding,
                 payload={
                     "repository_id": chunk.repository_id,
+                    "index_version": chunk.index_version,
                     "file_path": chunk.file_path,
                     "start_line": chunk.start_line,
                     "end_line": chunk.end_line,
@@ -190,7 +217,13 @@ def search_code(request: SearchRequest):
                         match=models.MatchValue(
                             value=request.repository_id
                         ),
-                    )
+                        ),
+                        models.FieldCondition(
+                            key="index_version",
+                            match=models.MatchValue(
+                                value=request.index_version
+                            ),
+                        ),
                 ]
             ),
             limit=request.limit,
@@ -245,7 +278,13 @@ def ask_repository(request: AskRequest):
                         match=models.MatchValue(
                             value=request.repository_id
                         ),
-                    )
+                        ),
+                        models.FieldCondition(
+                            key="index_version",
+                            match=models.MatchValue(
+                                value=request.index_version
+                            ),
+                        ),
                 ]
             ),
             limit=request.limit,

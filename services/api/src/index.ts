@@ -1,4 +1,5 @@
 import express from "express";
+import type { NextFunction, Request, Response } from "express";
 import cors from "cors";
 import {prisma} from "./db";
 import cookieParser from "cookie-parser";
@@ -42,6 +43,10 @@ app.get("/health/db", async (_req, res) => {
       database: "disconnected",
     });
   }
+});
+
+app.use((_error: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  res.status(500).json({ error: "Internal server error" });
 });
 
 console.log("Starting DevSage API...");

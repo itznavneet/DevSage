@@ -96,7 +96,7 @@ async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
         </form>
 
         <p className="mt-7 text-sm text-zinc-400">
-          Don't have an account?{" "}
+          Don&apos;t have an account?{" "}
           <Link href="/sign-up" className="font-semibold text-white underline underline-offset-4">
             Create account
           </Link>
