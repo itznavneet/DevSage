@@ -41,5 +41,9 @@
     "noUncheckedSideEffectImports": true,
     "moduleDetection": "force",
     "skipLibCheck": true,
-  }
+  },
+  "exclude": [
+    "prisma.config.ts",
+    "tests"
+  ]
 }
