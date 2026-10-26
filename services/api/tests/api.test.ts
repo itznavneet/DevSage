@@ -8,7 +8,10 @@ import { reindexRepository } from "../src/controllers/repository.controller";
 import {
   createConversation,
   createMessage,
+  deleteConversation,
   getConversation,
+  listConversations,
+  updateConversation,
 } from "../src/controllers/conversation.controller";
 import { askRepository } from "../src/controllers/ai.controller";
 import { requireAuth } from "../src/middleware/require-auth";
@@ -174,6 +177,89 @@ test("conversation endpoints enforce ownership", async () => {
   }
 });
 
+test("conversation CRUD supports create, list, switch, and delete", async () => {
+  const conversation = {
+    id: "conversation-1",
+    title: "JWT questions",
+    userId: "user-1",
+    repositoryId: "repo-1",
+    messages: [],
+  };
+  const repository = {
+    id: "repo-1",
+    status: "READY",
+    activeIndexVersion: "version-2",
+  };
+  let deleted = false;
+  const restoreRepositoryFind = replaceMethod(prisma.repository, "findFirst", async () => repository);
+  const restoreConversationFind = replaceMethod(prisma.conversation, "findFirst", async () => conversation);
+  const restoreConversationCreate = replaceMethod(prisma.conversation, "create", async () => conversation);
+  const restoreConversationList = replaceMethod(prisma.conversation, "findMany", async () => [conversation]);
+  const restoreConversationDelete = replaceMethod(prisma.conversation, "delete", async () => {
+    deleted = true;
+    return conversation;
+  });
+
+  try {
+    const createResult = response();
+    await createConversation(
+      { params: { repositoryId: "repo-1" }, body: { title: "JWT questions" } } as any,
+      { ...createResult, locals: { user: { id: "user-1" } } } as any,
+    );
+    assert.equal(createResult.statusCode, 201);
+
+    const listResult = response();
+    await listConversations(
+      { params: { repositoryId: "repo-1" } } as any,
+      { ...listResult, locals: { user: { id: "user-1" } } } as any,
+    );
+    assert.deepEqual((listResult.body as any).conversations, [conversation]);
+
+    const getResult = response();
+    await getConversation(
+      { params: { conversationId: "conversation-1" } } as any,
+      { ...getResult, locals: { user: { id: "user-1" } } } as any,
+    );
+    assert.equal((getResult.body as any).conversation.id, "conversation-1");
+
+    const deleteResult = response();
+    await deleteConversation(
+      { params: { conversationId: "conversation-1" } } as any,
+      { ...deleteResult, locals: { user: { id: "user-1" } } } as any,
+    );
+    assert.equal(deleteResult.statusCode, 200);
+    assert.equal(deleted, true);
+  } finally {
+    restoreRepositoryFind();
+    restoreConversationFind();
+    restoreConversationCreate();
+    restoreConversationList();
+    restoreConversationDelete();
+  }
+});
+
+test("conversation rename is ownership-scoped", async () => {
+  const restoreFind = replaceMethod(prisma.conversation, "findFirst", async () => ({ id: "conversation-1", userId: "user-1" }));
+  let updatedTitle = "";
+  const restoreUpdate = replaceMethod(prisma.conversation, "update", async ({ data }: any) => {
+    updatedTitle = data.title;
+    return { id: "conversation-1", title: data.title };
+  });
+
+  try {
+    const result = response();
+    await updateConversation(
+      { params: { conversationId: "conversation-1" }, body: { title: "JWT workflow" } } as any,
+      { ...result, locals: { user: { id: "user-1" } } } as any,
+    );
+    assert.equal(result.statusCode, 200);
+    assert.equal(updatedTitle, "JWT workflow");
+  } finally {
+    restoreFind();
+    restoreUpdate();
+  }
+});
+
 test("ask isolates conversations and sends bounded chronological history", async () => {
   const repository = {
     id: "repo-1",
@@ -267,6 +353,45 @@ test("ask rejects a foreign conversation before calling AI", async () => {
     globalThis.fetch = originalFetch;
     restoreRepositoryFind();
     restoreConversationFind();
+  }
+});
+
+test("failed AI requests do not save an incomplete message pair", async () => {
+  const restoreRepositoryFind = replaceMethod(prisma.repository, "findFirst", async () => ({
+    id: "repo-1",
+    name: "TodoApp",
+    status: "READY",
+    activeIndexVersion: "version-2",
+  }));
+  const restoreConversationFind = replaceMethod(prisma.conversation, "findFirst", async () => ({
+    id: "conversation-1",
+    messages: [],
+  }));
+  let transactionCalled = false;
+  const restoreTransaction = replaceMethod(prisma, "$transaction", async () => {
+    transactionCalled = true;
+    throw new Error("transaction should not run after AI failure");
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response("AI unavailable", { status: 503 });
+
+  try {
+    const result = response();
+    await askRepository(
+      {
+        params: { repositoryId: "repo-1" },
+        body: { conversationId: "conversation-1", question: "Follow up" },
+      } as any,
+      { ...result, locals: { user: { id: "user-1" } } } as any,
+    );
+
+    assert.equal(result.statusCode, 502);
+    assert.equal(transactionCalled, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreRepositoryFind();
+    restoreConversationFind();
+    restoreTransaction();
   }
 });
 

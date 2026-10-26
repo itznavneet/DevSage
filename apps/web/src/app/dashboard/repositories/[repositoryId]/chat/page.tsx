@@ -6,13 +6,17 @@ import axios from "axios";
 import {
   AlertCircle,
   ArrowLeft,
+  Check,
   LoaderCircle,
   MessageSquarePlus,
+  Pencil,
   Send,
   Trash2,
+  X,
 } from "lucide-react";
 import AuthGuard from "@/components/auth-guard";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { getRepositories, type Repository } from "@/lib/repository.api";
 import { askRepository, type AskRepositoryResponse } from "@/lib/ai.api";
 import {
@@ -20,6 +24,7 @@ import {
   deleteConversation,
   getConversation,
   getConversations,
+  updateConversation,
   type Conversation,
   type ConversationMessage,
   type ConversationWithMessages,
@@ -69,6 +74,9 @@ function ChatWorkspace({ repositoryId }: { repositoryId: string }) {
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [creating, setCreating] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
+  const [savingTitle, setSavingTitle] = useState(false);
   const [asking, setAsking] = useState(false);
   const [question, setQuestion] = useState("");
   const [error, setError] = useState("");
@@ -162,6 +170,40 @@ function ChatWorkspace({ repositoryId }: { repositoryId: string }) {
       setError(errorMessage(requestError, "Could not delete this conversation."));
     } finally {
       setDeleting(false);
+    }
+  }
+
+  function startRename() {
+    if (!conversation) return;
+    setTitleDraft(conversation.title || "");
+    setEditingTitle(true);
+    setError("");
+  }
+
+  function cancelRename() {
+    setEditingTitle(false);
+    setTitleDraft("");
+  }
+
+  async function handleRename(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!conversation || !titleDraft.trim() || savingTitle) return;
+
+    setSavingTitle(true);
+    setError("");
+    try {
+      const updated = await updateConversation(conversation.id, titleDraft.trim());
+      setConversation((current) => current ? { ...current, title: updated.title, updatedAt: updated.updatedAt } : current);
+      setConversations((current) => current.map((item) => item.id === updated.id ? updated : item));
+      cancelRename();
+    } catch (requestError) {
+      if (axios.isAxiosError(requestError) && requestError.response?.status === 401) {
+        router.replace("/sign-in");
+        return;
+      }
+      setError(errorMessage(requestError, "Could not rename this conversation."));
+    } finally {
+      setSavingTitle(false);
     }
   }
 
@@ -264,7 +306,29 @@ function ChatWorkspace({ repositoryId }: { repositoryId: string }) {
           <section className="flex min-h-[620px] min-w-0 flex-col rounded-2xl border border-white/10 bg-white/[0.035]">
             <div className="flex items-center justify-between gap-3 border-b border-white/10 px-4 py-3 sm:px-6">
               <div className="min-w-0">
-                <h2 className="truncate font-medium">{conversation?.title || "New conversation"}</h2>
+                {conversation && editingTitle ? (
+                  <form onSubmit={handleRename} className="flex max-w-xl items-center gap-2">
+                    <Input
+                      value={titleDraft}
+                      onChange={(event) => setTitleDraft(event.target.value)}
+                      maxLength={200}
+                      autoFocus
+                      aria-label="Conversation title"
+                      className="h-9 border-white/15 bg-black/20 text-white"
+                    />
+                    <Button type="submit" size="icon-sm" disabled={savingTitle || !titleDraft.trim()} aria-label="Save conversation name" className="bg-white text-zinc-950 hover:bg-zinc-200">
+                      {savingTitle ? <LoaderCircle className="animate-spin" /> : <Check />}
+                    </Button>
+                    <Button type="button" variant="ghost" size="icon-sm" onClick={cancelRename} disabled={savingTitle} aria-label="Cancel renaming" className="text-zinc-400 hover:text-white">
+                      <X />
+                    </Button>
+                  </form>
+                ) : (
+                  <div className="flex min-w-0 items-center gap-2">
+                    <h2 className="truncate font-medium">{conversation?.title || "New conversation"}</h2>
+                    {conversation ? <Button type="button" variant="ghost" size="icon-xs" onClick={startRename} aria-label="Rename conversation" className="text-zinc-500 hover:text-white"><Pencil /></Button> : null}
+                  </div>
+                )}
                 <p className="text-xs text-zinc-500">Ask questions about the indexed codebase.</p>
               </div>
               {conversation ? (

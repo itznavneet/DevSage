@@ -3,12 +3,16 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.createConversation = createConversation;
 exports.listConversations = listConversations;
 exports.getConversation = getConversation;
+exports.updateConversation = updateConversation;
 exports.deleteConversation = deleteConversation;
 exports.createMessage = createMessage;
 const zod_1 = require("zod");
 const db_1 = require("../db");
 const conversationSchema = zod_1.z.object({
     title: zod_1.z.string().trim().min(1).max(200).optional(),
+});
+const renameConversationSchema = zod_1.z.object({
+    title: zod_1.z.string().trim().min(1).max(200),
 });
 const messageSchema = zod_1.z.object({
     role: zod_1.z.enum(["USER", "ASSISTANT"]),
@@ -110,6 +114,32 @@ async function getConversation(req, res) {
     catch (error) {
         console.error("Get conversation failed:", error);
         return res.status(500).json({ error: "Could not fetch conversation" });
+    }
+}
+async function updateConversation(req, res) {
+    const userId = getUserId(res);
+    const conversationId = getParam(req.params.conversationId);
+    if (!userId || !conversationId) {
+        return res.status(400).json({ error: "Invalid conversation" });
+    }
+    const parsed = renameConversationSchema.safeParse(req.body);
+    if (!parsed.success) {
+        return res.status(400).json({ error: "Conversation title is required" });
+    }
+    try {
+        const conversation = await findOwnedConversation(conversationId, userId);
+        if (!conversation) {
+            return res.status(404).json({ error: "Conversation not found" });
+        }
+        const updatedConversation = await db_1.prisma.conversation.update({
+            where: { id: conversation.id },
+            data: { title: parsed.data.title },
+        });
+        return res.json({ conversation: updatedConversation });
+    }
+    catch (error) {
+        console.error("Rename conversation failed:", error);
+        return res.status(500).json({ error: "Could not rename conversation" });
     }
 }
 async function deleteConversation(req, res) {

@@ -8,6 +8,7 @@ router.use(require_auth_1.requireAuth);
 router.post("/repositories/:repositoryId/conversations", conversation_controller_1.createConversation);
 router.get("/repositories/:repositoryId/conversations", conversation_controller_1.listConversations);
 router.get("/conversations/:conversationId", conversation_controller_1.getConversation);
+router.patch("/conversations/:conversationId", conversation_controller_1.updateConversation);
 router.delete("/conversations/:conversationId", conversation_controller_1.deleteConversation);
 router.post("/conversations/:conversationId/messages", conversation_controller_1.createMessage);
 exports.default = router;

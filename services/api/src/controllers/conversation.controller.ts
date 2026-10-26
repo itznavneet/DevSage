@@ -6,6 +6,10 @@ const conversationSchema = z.object({
   title: z.string().trim().min(1).max(200).optional(),
 });
 
+const renameConversationSchema = z.object({
+  title: z.string().trim().min(1).max(200),
+});
+
 const messageSchema = z.object({
   role: z.enum(["USER", "ASSISTANT"]),
   content: z.string().trim().min(1).max(50_000),
@@ -125,6 +129,37 @@ export async function getConversation(req: Request, res: Response) {
   } catch (error) {
     console.error("Get conversation failed:", error);
     return res.status(500).json({ error: "Could not fetch conversation" });
+  }
+}
+
+export async function updateConversation(req: Request, res: Response) {
+  const userId = getUserId(res);
+  const conversationId = getParam(req.params.conversationId);
+
+  if (!userId || !conversationId) {
+    return res.status(400).json({ error: "Invalid conversation" });
+  }
+
+  const parsed = renameConversationSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Conversation title is required" });
+  }
+
+  try {
+    const conversation = await findOwnedConversation(conversationId, userId);
+    if (!conversation) {
+      return res.status(404).json({ error: "Conversation not found" });
+    }
+
+    const updatedConversation = await prisma.conversation.update({
+      where: { id: conversation.id },
+      data: { title: parsed.data.title },
+    });
+
+    return res.json({ conversation: updatedConversation });
+  } catch (error) {
+    console.error("Rename conversation failed:", error);
+    return res.status(500).json({ error: "Could not rename conversation" });
   }
 }
 

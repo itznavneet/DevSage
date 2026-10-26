@@ -46,6 +46,14 @@ export async function getConversation(conversationId: string) {
   return response.data.conversation;
 }
 
+export async function updateConversation(conversationId: string, title: string) {
+  const response = await api.patch<{ conversation: Conversation }>(
+    `/api/conversations/${encodeURIComponent(conversationId)}`,
+    { title },
+  );
+  return response.data.conversation;
+}
+
 export async function deleteConversation(conversationId: string) {
   await api.delete(`/api/conversations/${encodeURIComponent(conversationId)}`);
 }
