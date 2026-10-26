@@ -17,11 +17,12 @@ export interface AskRepositoryResponse {
 
 export async function askRepository(
   repositoryId: string,
+  conversationId: string,
   question: string
 ): Promise<AskRepositoryResponse> {
   const response = await api.post<AskRepositoryResponse>(
     `/api/ai/repositories/${encodeURIComponent(repositoryId)}/ask`,
-    { question }
+    { conversationId, question }
   );
 
   return response.data;

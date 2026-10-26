@@ -4,6 +4,7 @@ import { prisma } from "../db";
 
 const AI_SERVICE_URL =
   process.env.AI_SERVICE_URL || "http://localhost:8000";
+const RECENT_MESSAGE_LIMIT = 12;
 
 async function getActiveRepository(repositoryId: string, userId: string) {
   return prisma.repository.findFirst({
@@ -21,6 +22,10 @@ export async function askRepository(req: Request, res: Response) {
       typeof req.body?.question === "string"
         ? req.body.question.trim()
         : "";
+    const conversationId =
+      typeof req.body?.conversationId === "string"
+        ? req.body.conversationId
+        : "";
 
     if (!userId) {
       return res.status(401).json({ error: "Unauthorized" });
@@ -30,6 +35,10 @@ export async function askRepository(req: Request, res: Response) {
       return res.status(400).json({
         error: "Question must contain between 1 and 2000 characters",
       });
+    }
+
+    if (!conversationId) {
+      return res.status(400).json({ error: "conversationId is required" });
     }
 
     const repository = await getActiveRepository(repositoryId, userId);
@@ -47,6 +56,32 @@ export async function askRepository(req: Request, res: Response) {
       });
     }
 
+    const conversation = await prisma.conversation.findFirst({
+      where: {
+        id: conversationId,
+        userId,
+        repositoryId: repository.id,
+      },
+      include: {
+        messages: {
+          orderBy: { createdAt: "desc" },
+          take: RECENT_MESSAGE_LIMIT,
+          select: { role: true, content: true },
+        },
+      },
+    });
+
+    if (!conversation) {
+      return res.status(404).json({ error: "Conversation not found" });
+    }
+
+    const conversationHistory = [...conversation.messages]
+      .reverse()
+      .map((message) => ({
+        role: message.role,
+        content: message.content,
+      }));
+
     const response = await fetch(`${AI_SERVICE_URL}/ask`, {
       method: "POST",
       headers: {
@@ -57,6 +92,8 @@ export async function askRepository(req: Request, res: Response) {
         index_version: repository.activeIndexVersion,
         question,
         limit: 5,
+        conversation_id: conversation.id,
+        conversation_history: conversationHistory,
       }),
       signal: AbortSignal.timeout(120_000),
     });
@@ -73,13 +110,45 @@ export async function askRepository(req: Request, res: Response) {
 
     const result = await response.json();
 
+    if (!result || typeof result.answer !== "string") {
+      console.error("AI service returned an invalid answer");
+      return res.status(502).json({
+        error: "The AI service returned an invalid answer",
+      });
+    }
+
+    const sources = Array.isArray(result.sources) ? result.sources : [];
+    const serializedSources = JSON.parse(JSON.stringify(sources));
+
+    await prisma.$transaction(async (transaction) => {
+      await transaction.message.create({
+        data: {
+          conversationId: conversation.id,
+          role: "USER",
+          content: question,
+        },
+      });
+      await transaction.message.create({
+        data: {
+          conversationId: conversation.id,
+          role: "ASSISTANT",
+          content: result.answer,
+          sources: serializedSources,
+        },
+      });
+      await transaction.conversation.update({
+        where: { id: conversation.id },
+        data: { updatedAt: new Date() },
+      });
+    });
+
     return res.json({
       repository: {
         id: repository.id,
         name: repository.name,
       },
       answer: result.answer,
-      sources: result.sources,
+      sources,
     });
   } catch (error) {
     console.error("askRepository error:", error);

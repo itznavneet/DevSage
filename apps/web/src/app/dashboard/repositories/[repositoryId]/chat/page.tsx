@@ -20,7 +20,6 @@ import {
   deleteConversation,
   getConversation,
   getConversations,
-  saveMessage,
   type Conversation,
   type ConversationMessage,
   type ConversationWithMessages,
@@ -176,13 +175,7 @@ function ChatWorkspace({ repositoryId }: { repositoryId: string }) {
     setError("");
 
     try {
-      await saveMessage(conversation.id, { role: "USER", content });
-      const result = await askRepository(repositoryId, content);
-      await saveMessage(conversation.id, {
-        role: "ASSISTANT",
-        content: result.answer,
-        sources: result.sources,
-      });
+      await askRepository(repositoryId, conversation.id, content);
       await loadConversation(conversation.id);
       setConversations((current) =>
         current.map((item) =>

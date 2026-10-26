@@ -145,6 +145,72 @@ class AiServiceTests(unittest.TestCase):
         prompt = self.openai.chat.completions.create.call_args.kwargs["messages"][1]["content"]
         self.assertIn("export function login() {}", prompt)
 
+    def test_follow_up_history_is_context_and_current_code_is_grounding(self):
+        self.openai.embeddings.create.return_value.data = [
+            SimpleNamespace(index=0, embedding=[0.1, 0.2])
+        ]
+        self.qdrant.query_points.return_value.points = [SimpleNamespace(
+            score=0.91,
+            payload={
+                "file_path": "src/auth/jwt.ts",
+                "start_line": 10,
+                "end_line": 20,
+                "content": "export function verifyToken(token) {}",
+            },
+        )]
+        self.openai.chat.completions.create.return_value.choices = [
+            SimpleNamespace(message=SimpleNamespace(content="Follow-up answer"))
+        ]
+
+        main.ask_repository(main.AskRequest(
+            repository_id="repo-1",
+            index_version="version-2",
+            question="Where is that function called?",
+            conversation_id="conversation-1",
+            conversation_history=[
+                main.ConversationMessage(role="USER", content="Where is JWT verification?"),
+                main.ConversationMessage(role="ASSISTANT", content="It is in src/auth/jwt.ts."),
+            ],
+        ))
+
+        messages = self.openai.chat.completions.create.call_args.kwargs["messages"]
+        system_prompt = messages[0]["content"]
+        user_prompt = messages[1]["content"]
+        self.assertIn("unverified context", system_prompt)
+        self.assertIn("Where is JWT verification?", user_prompt)
+        self.assertIn("Where is that function called?", user_prompt)
+        self.assertIn("verifyToken", user_prompt)
+
+    def test_empty_history_is_explicit_and_history_cannot_authorize_citations(self):
+        self.openai.embeddings.create.return_value.data = [
+            SimpleNamespace(index=0, embedding=[0.1, 0.2])
+        ]
+        self.qdrant.query_points.return_value.points = [SimpleNamespace(
+            score=0.91,
+            payload={
+                "file_path": "src/auth.ts",
+                "start_line": 10,
+                "end_line": 20,
+                "content": "export function login() {}",
+            },
+        )]
+        self.openai.chat.completions.create.return_value.choices = [
+            SimpleNamespace(message=SimpleNamespace(
+                content="See src/secret.ts (lines 1-4)."
+            ))
+        ]
+
+        result = main.ask_repository(main.AskRequest(
+            repository_id="repo-1",
+            index_version="version-2",
+            question="Where is login?",
+        ))
+
+        prompt = self.openai.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+        self.assertIn("(No prior conversation.)", prompt)
+        self.assertNotIn("src/secret.ts", result["answer"])
+        self.assertIn("[unverified citation removed]", result["answer"])
+
     def test_ask_combines_keyword_matches_with_semantic_candidates(self):
         self.openai.embeddings.create.return_value.data = [
             SimpleNamespace(index=0, embedding=[0.1, 0.2])

@@ -10,6 +10,7 @@ import {
   createMessage,
   getConversation,
 } from "../src/controllers/conversation.controller";
+import { askRepository } from "../src/controllers/ai.controller";
 import { requireAuth } from "../src/middleware/require-auth";
 import { ingestionQueue } from "../src/queues/ingestion.queue";
 import { stageAndActivate } from "../src/workers/versioned-ingestion";
@@ -168,6 +169,102 @@ test("conversation endpoints enforce ownership", async () => {
     );
     assert.equal(messageResult.statusCode, 404);
   } finally {
+    restoreRepositoryFind();
+    restoreConversationFind();
+  }
+});
+
+test("ask isolates conversations and sends bounded chronological history", async () => {
+  const repository = {
+    id: "repo-1",
+    name: "TodoApp",
+    status: "READY",
+    activeIndexVersion: "version-2",
+  };
+  const recentMessages = [
+    { role: "ASSISTANT", content: "The token is verified in jwt.ts." },
+    { role: "USER", content: "Where is JWT handling?" },
+  ];
+  let conversationQuery: any;
+  let transactionRoles: string[] = [];
+  let aiRequest: any;
+  const restoreRepositoryFind = replaceMethod(prisma.repository, "findFirst", async () => repository);
+  const restoreConversationFind = replaceMethod(prisma.conversation, "findFirst", async (args: any) => {
+    conversationQuery = args;
+    return { id: "conversation-1", messages: recentMessages };
+  });
+  const restoreTransaction = replaceMethod(prisma, "$transaction", async (callback: any) => callback({
+    message: {
+      create: async ({ data }: any) => {
+        transactionRoles.push(data.role);
+        return { id: `${data.role.toLowerCase()}-1`, ...data };
+      },
+    },
+    conversation: { update: async () => undefined },
+  }));
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_input, init) => {
+    aiRequest = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({ answer: "Grounded answer", sources: [] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  try {
+    const result = response();
+    await askRepository(
+      {
+        params: { repositoryId: "repo-1" },
+        body: { conversationId: "conversation-1", question: "Where is it called?" },
+      } as any,
+      { ...result, locals: { user: { id: "user-1" } } } as any,
+    );
+
+    assert.equal(result.statusCode, 200);
+    assert.deepEqual(transactionRoles, ["USER", "ASSISTANT"]);
+    assert.deepEqual(aiRequest.conversation_history, [recentMessages[1], recentMessages[0]]);
+    assert.equal(conversationQuery.where.userId, "user-1");
+    assert.equal(conversationQuery.where.repositoryId, "repo-1");
+    assert.equal(conversationQuery.include.messages.take, 12);
+    assert.deepEqual(conversationQuery.include.messages.orderBy, { createdAt: "desc" });
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreRepositoryFind();
+    restoreConversationFind();
+    restoreTransaction();
+  }
+});
+
+test("ask rejects a foreign conversation before calling AI", async () => {
+  const restoreRepositoryFind = replaceMethod(prisma.repository, "findFirst", async () => ({
+    id: "repo-1",
+    name: "TodoApp",
+    status: "READY",
+    activeIndexVersion: "version-2",
+  }));
+  const restoreConversationFind = replaceMethod(prisma.conversation, "findFirst", async () => null);
+  const originalFetch = globalThis.fetch;
+  let called = false;
+  globalThis.fetch = async () => {
+    called = true;
+    return new Response("unexpected", { status: 500 });
+  };
+
+  try {
+    const result = response();
+    await askRepository(
+      {
+        params: { repositoryId: "repo-1" },
+        body: { conversationId: "foreign-conversation", question: "Follow up" },
+      } as any,
+      { ...result, locals: { user: { id: "user-1" } } } as any,
+    );
+
+    assert.equal(result.statusCode, 404);
+    assert.equal(called, false);
+  } finally {
+    globalThis.fetch = originalFetch;
     restoreRepositoryFind();
     restoreConversationFind();
   }
