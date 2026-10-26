@@ -19,6 +19,16 @@ RETRIEVAL_CANDIDATE_LIMIT = 20
 MIN_CONTEXT_CHUNKS = 5
 MAX_CONTEXT_CHUNKS = 8
 KEYWORD_CANDIDATE_LIMIT = 1000
+KEYWORD_STOPWORDS = {
+    "a", "an", "and", "are", "does", "for", "how", "is", "main",
+    "of", "the", "to", "what", "where", "which", "with",
+}
+CITATION_PATTERN = re.compile(
+    r"(?P<file>[A-Za-z0-9_./\\-]+?)\s*"
+    r"(?:\(\s*lines?\s+(?P<start>\d+)\s*[-–]\s*(?P<end>\d+)\s*\)"
+    r"|:\s*(?P<colon_start>\d+)\s*[-–]\s*(?P<colon_end>\d+))",
+    re.IGNORECASE,
+)
 
 api_key = os.getenv("OPENAI_API_KEY")
 if not api_key:
@@ -105,7 +115,11 @@ class AskRequest(BaseModel):
 
 
 def _query_tokens(question: str):
-    return set(re.findall(r"[a-z0-9_]+", question.lower()))
+    return {
+        token
+        for token in re.findall(r"[a-z0-9_]+", question.lower())
+        if token not in KEYWORD_STOPWORDS
+    }
 
 
 def _candidate_key(point):
@@ -208,6 +222,40 @@ def select_context_points(points, requested_limit: int, ranking_scores=None):
             break
 
     return selected_points
+
+
+def verify_answer_citations(answer: str, sources):
+    """Remove citation spans that are not supported by retrieved sources."""
+    supported_ranges = {}
+    for source in sources:
+        file_path = source.get("file_path")
+        start_line = source.get("start_line")
+        end_line = source.get("end_line")
+        if (
+            isinstance(file_path, str)
+            and isinstance(start_line, int)
+            and isinstance(end_line, int)
+            and start_line >= 1
+            and end_line >= start_line
+        ):
+            normalized_path = file_path.replace("\\", "/")
+            supported_ranges.setdefault(normalized_path, []).append(
+                (start_line, end_line)
+            )
+
+    def replace_if_unsupported(match):
+        start_line = int(match.group("start") or match.group("colon_start"))
+        end_line = int(match.group("end") or match.group("colon_end"))
+        file_path = match.group("file").replace("\\", "/")
+        is_supported = any(
+            start_line <= end_line
+            and start_line >= source_start
+            and end_line <= source_end
+            for source_start, source_end in supported_ranges.get(file_path, [])
+        )
+        return match.group(0) if is_supported else "[unverified citation removed]"
+
+    return CITATION_PATTERN.sub(replace_if_unsupported, answer)
 
 
 
@@ -499,6 +547,7 @@ def ask_repository(request: AskRequest):
         answer = completion.choices[0].message.content or (
             "I couldn't generate an answer from the retrieved context."
         )
+        answer = verify_answer_citations(answer, sources)
 
         return {
             "answer": answer,

@@ -186,6 +186,75 @@ class AiServiceTests(unittest.TestCase):
         self.assertIn("repo-1", values)
         self.assertIn("version-2", values)
 
+    def test_valid_citation_is_preserved(self):
+        sources = [{
+            "file_path": "src/auth.ts",
+            "start_line": 10,
+            "end_line": 20,
+        }]
+
+        answer = main.verify_answer_citations(
+            "The login flow is in src/auth.ts (lines 12-18).",
+            sources,
+        )
+
+        self.assertEqual(answer, "The login flow is in src/auth.ts (lines 12-18).")
+
+    def test_unknown_file_citation_is_removed(self):
+        sources = [{
+            "file_path": "src/auth.ts",
+            "start_line": 10,
+            "end_line": 20,
+        }]
+
+        answer = main.verify_answer_citations(
+            "See src/secret.ts (lines 1-4).",
+            sources,
+        )
+
+        self.assertNotIn("src/secret.ts", answer)
+        self.assertIn("[unverified citation removed]", answer)
+
+    def test_citation_outside_retrieved_line_range_is_removed(self):
+        sources = [{
+            "file_path": "src/auth.ts",
+            "start_line": 10,
+            "end_line": 20,
+        }]
+
+        answer = main.verify_answer_citations(
+            "See src/auth.ts (lines 1-25).",
+            sources,
+        )
+
+        self.assertNotIn("src/auth.ts", answer)
+        self.assertIn("[unverified citation removed]", answer)
+
+        reversed_answer = main.verify_answer_citations(
+            "See src/auth.ts (lines 20-10).",
+            sources,
+        )
+        self.assertNotIn("src/auth.ts", reversed_answer)
+        self.assertIn("[unverified citation removed]", reversed_answer)
+
+    def test_insufficient_context_returns_without_calling_the_llm(self):
+        self.openai.embeddings.create.return_value.data = [
+            SimpleNamespace(index=0, embedding=[0.1, 0.2])
+        ]
+        self.qdrant.query_points.return_value.points = []
+        self.qdrant.scroll.return_value = ([], None)
+
+        result = main.ask_repository(main.AskRequest(
+            repository_id="repo-1",
+            index_version="version-2",
+            question="Where is authentication?",
+            limit=5,
+        ))
+
+        self.assertEqual(result["sources"], [])
+        self.assertIn("couldn't find relevant indexed code", result["answer"])
+        self.openai.chat.completions.create.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
