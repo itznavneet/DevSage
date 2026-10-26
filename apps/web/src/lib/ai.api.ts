@@ -11,7 +11,7 @@ export interface AskRepositoryResponse {
     file_path: string;
     start_line: number;
     end_line: number;
-    score: number;
+    score: number | null;
   }[];
 }
 

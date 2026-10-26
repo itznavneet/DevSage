@@ -10,6 +10,7 @@ const cookie_parser_1 = __importDefault(require("cookie-parser"));
 const auth_routes_1 = __importDefault(require("./routes/auth.routes"));
 const repository_routes_1 = __importDefault(require("./routes/repository.routes"));
 const ai_routes_1 = __importDefault(require("./routes/ai.routes"));
+const conversation_routes_1 = __importDefault(require("./routes/conversation.routes"));
 const app = (0, express_1.default)();
 const PORT = Number(process.env.PORT) || 4000;
 app.use((0, cors_1.default)({
@@ -21,6 +22,7 @@ app.use((0, cookie_parser_1.default)());
 app.use("/api/auth", auth_routes_1.default);
 app.use("/api/repositories", repository_routes_1.default);
 app.use("/api/ai", ai_routes_1.default);
+app.use("/api", conversation_routes_1.default);
 app.get("/health", (_req, res) => {
     res.json({
         status: "ok",

@@ -16,6 +16,9 @@ const versioned_ingestion_1 = require("./versioned-ingestion");
 const execFileAsync = (0, node_util_1.promisify)(node_child_process_1.execFile);
 const connection = new ioredis_1.default(process.env.REDIS_URL || "redis://localhost:6379", { maxRetriesPerRequest: null });
 const AI_SERVICE_URL = process.env.AI_SERVICE_URL || "http://localhost:8000";
+// GitHub repositories can contain very deeply nested fixture paths. Git's
+// long-path option is enabled below so checkout does not fail on Windows.
+const INGESTION_TEMP_ROOT = process.env.DEVSAGE_TEMP_DIR || (0, node_os_1.tmpdir)();
 const IGNORED_DIRS = new Set([
     ".git",
     "node_modules",
@@ -254,9 +257,10 @@ const worker = new bullmq_1.Worker("repository-ingestion", async (job) => {
             where: { id: repositoryId },
             data: { status: "CLONING", errorMessage: null },
         });
-        temporaryDirectory = await (0, promises_1.mkdtemp)((0, node_path_1.join)((0, node_os_1.tmpdir)(), "devsage-repo-"));
+        temporaryDirectory = await (0, promises_1.mkdtemp)((0, node_path_1.join)(INGESTION_TEMP_ROOT, "repo-"));
         const cloneDirectory = (0, node_path_1.join)(temporaryDirectory, "source");
         await execFileAsync("git", [
+            "-c", "core.longpaths=true",
             "clone",
             "--depth", "1",
             "--single-branch",

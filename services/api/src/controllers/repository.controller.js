@@ -62,6 +62,7 @@ async function createRepository(req, res) {
         });
     }
     const userId = res.locals.user.id;
+    let createdRepositoryId;
     try {
         const repository = await db_1.prisma.repository.create({
             data: {
@@ -72,6 +73,7 @@ async function createRepository(req, res) {
                 userId,
             },
         });
+        createdRepositoryId = repository.id;
         await ingestion_queue_1.ingestionQueue.add("ingest-repository", {
             repositoryId: repository.id,
             userId,
@@ -100,6 +102,15 @@ async function createRepository(req, res) {
             });
         }
         console.error("Create repository failed:", error);
+        if (createdRepositoryId) {
+            await db_1.prisma.repository.updateMany({
+                where: { id: createdRepositoryId, userId },
+                data: {
+                    status: "FAILED",
+                    errorMessage: "Could not enqueue repository indexing. Please retry.",
+                },
+            });
+        }
         return res.status(500).json({ message: "Could not add repository" });
     }
 }

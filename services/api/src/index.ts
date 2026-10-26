@@ -6,6 +6,7 @@ import cookieParser from "cookie-parser";
 import authRoutes from "./routes/auth.routes";
 import repositoryRoutes from "./routes/repository.routes";
 import aiRoutes from "./routes/ai.routes";
+import conversationRoutes from "./routes/conversation.routes";
 
 const app = express();
 const PORT = Number(process.env.PORT) || 4000;
@@ -19,6 +20,7 @@ app.use(cookieParser());
 app.use("/api/auth", authRoutes);
 app.use("/api/repositories", repositoryRoutes);
 app.use("/api/ai", aiRoutes);
+app.use("/api", conversationRoutes);
 
 app.get("/health", (_req, res) => {
   res.json({

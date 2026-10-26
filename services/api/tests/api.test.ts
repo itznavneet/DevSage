@@ -5,6 +5,11 @@ import argon2 from "argon2";
 import { prisma } from "../src/db";
 import { login, register } from "../src/controllers/auth.controller";
 import { reindexRepository } from "../src/controllers/repository.controller";
+import {
+  createConversation,
+  createMessage,
+  getConversation,
+} from "../src/controllers/conversation.controller";
 import { requireAuth } from "../src/middleware/require-auth";
 import { ingestionQueue } from "../src/queues/ingestion.queue";
 import { stageAndActivate } from "../src/workers/versioned-ingestion";
@@ -131,6 +136,40 @@ test("repository reindex is ownership-scoped", async () => {
     restoreFind();
     restoreAdd();
     await ingestionQueue.close();
+  }
+});
+
+test("conversation endpoints enforce ownership", async () => {
+  const restoreRepositoryFind = replaceMethod(prisma.repository, "findFirst", async () => null);
+  const restoreConversationFind = replaceMethod(prisma.conversation, "findFirst", async () => null);
+
+  try {
+    const createResult = response();
+    await createConversation(
+      { params: { repositoryId: "repo-owned-by-someone-else" }, body: {} } as any,
+      { ...createResult, locals: { user: { id: "user-1" } } } as any,
+    );
+    assert.equal(createResult.statusCode, 404);
+
+    const getResult = response();
+    await getConversation(
+      { params: { conversationId: "conversation-owned-by-someone-else" } } as any,
+      { ...getResult, locals: { user: { id: "user-1" } } } as any,
+    );
+    assert.equal(getResult.statusCode, 404);
+
+    const messageResult = response();
+    await createMessage(
+      {
+        params: { conversationId: "conversation-owned-by-someone-else" },
+        body: { role: "USER", content: "secret question" },
+      } as any,
+      { ...messageResult, locals: { user: { id: "user-1" } } } as any,
+    );
+    assert.equal(messageResult.statusCode, 404);
+  } finally {
+    restoreRepositoryFind();
+    restoreConversationFind();
   }
 });
 
