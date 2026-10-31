@@ -1,11 +1,13 @@
 {
   "name": "api",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "worker": "tsx watch src/workers/ingestion.worker.ts",
-    "build": "tsc",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "worker:prod": "node dist/workers/ingestion.worker.js",
     "test": "tsx --test --test-force-exit \"tests/**/*.test.ts\""
   },
   "keywords": [],

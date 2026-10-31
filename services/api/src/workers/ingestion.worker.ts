@@ -168,6 +168,7 @@ async function collectSourceFiles(root: string): Promise<SourceFile[]> {
   return files;
 }
 
+// Create a stable point id from the index version and chunk id.
 function stablePointId(indexVersion: string, chunkId: string): string {
   const bytes = createHash("sha1")
     .update(`${indexVersion}:${chunkId}`)
@@ -178,6 +179,7 @@ function stablePointId(indexVersion: string, chunkId: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
+// Split a source file into chunks of lines.
 function splitIntoChunks(
   repositoryId: string,
   indexVersion: string,
@@ -245,6 +247,7 @@ function splitIntoChunks(
   return chunks;
 }
 
+// Clear a repository's index version.
 async function deleteIndexVersion(repositoryId: string, indexVersion: string): Promise<void> {
   const response = await fetch(
     `${AI_SERVICE_URL}/repositories/${encodeURIComponent(repositoryId)}/indexes/${encodeURIComponent(indexVersion)}`,
@@ -259,6 +262,7 @@ async function deleteIndexVersion(repositoryId: string, indexVersion: string): P
   }
 }
 
+// Send a batch of chunks to the AI service.
 async function sendBatch(chunks: CodeChunk[]): Promise<number> {
   const response = await fetch(`${AI_SERVICE_URL}/index`, {
     method: "POST",
