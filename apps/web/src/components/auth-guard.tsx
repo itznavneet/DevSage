@@ -18,7 +18,7 @@ export default function AuthGuard({
     async function checkSession() {
       try {
         const response = await fetch(
-          `${process.env.NEXT_PUBLIC_API_URL}/api/auth/me`,
+          `"/api/auth/me",
           { credentials: "include", cache: "no-store" }
         );
 
